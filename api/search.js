@@ -26,19 +26,19 @@ export default async function handler(req, res) {
 
     const cleanQuery = query.trim().toLowerCase();
     
-    // Tách tập hợp từ khóa
+    // Tách tập hợp từ khóa (lọc bỏ các từ quá ngắn, giữ tối đa 10 từ)
     const words = cleanQuery
       .replace(/[^\w\sàáạảãâấầẩẫậăắằẳẵặèéẹẻẽêếềểễệìíịỉĩòóọỏõôốồổỗộơớờởỡợùúụủũưứừửữựỳýỵỷỹđ]/g, ' ')
       .split(/\s+/)
-      .filter(w => w.length > 0)
-      .slice(0, 10); // Cho phép tập hợp tới 10 từ
+      .filter(w => w.length > 1)
+      .slice(0, 10);
 
     let webList = [];
 
     if (words.length > 0) {
       const placeholders = words.map(() => '?').join(',');
       
-      // Xử lý tập hợp: Đếm số lượng từ trong tập hợp xuất hiện trong từng tài liệu (match_count)
+      // Truy vấn mục lục ngược với tập hợp từ
       const sql1 = `
         SELECT m.doc_id, COUNT(DISTINCT t.word_id) as match_count
         FROM tu_dien t
@@ -46,7 +46,7 @@ export default async function handler(req, res) {
         WHERE t.tu IN (${placeholders})
         GROUP BY m.doc_id
         ORDER BY match_count DESC
-        LIMIT 200
+        LIMIT 300
       `;
 
       const [docMatches] = await connection.execute(sql1, words);
@@ -66,17 +66,18 @@ export default async function handler(req, res) {
           const titleLower = title.toLowerCase();
           const previewLower = (doc.preview || '').toLowerCase();
 
-          // Điểm cơ sở dựa trên số từ trong tập hợp khớp được
           const matchedWordsCount = matchScores[docId] || 1;
-          let score = matchedWordsCount * 100; 
+          
+          // Công thức tính điểm thông minh: Ưu tiên số lượng từ khớp trong tập hợp (nhân hệ số lớn)
+          let score = matchedWordsCount * 200; 
 
-          // Thưởng điểm nếu chứa trọn vẹn cả cụm tập hợp từ
-          if (titleLower.includes(cleanQuery)) score += 500;
-          if (previewLower.includes(cleanQuery)) score += 200;
+          // Thưởng điểm nếu chứa trọn vẹn cả cụm từ khóa gốc
+          if (titleLower.includes(cleanQuery)) score += 1000;
+          if (previewLower.includes(cleanQuery)) score += 400;
 
-          // Thưởng điểm cho từng từ xuất hiện trong tiêu đề
+          // Thưởng điểm cho từng từ xuất hiện rời rạc trong tiêu đề
           words.forEach(w => {
-            if (titleLower.includes(w)) score += 50;
+            if (titleLower.includes(w)) score += 80;
           });
 
           return {
@@ -89,12 +90,17 @@ export default async function handler(req, res) {
           };
         });
 
-        // Sắp xếp: Ưu tiên tài liệu khớp NHIỀU TỪ TRONG TẬP HỢP nhất lên đầu
-        webList.sort((a, b) => b.score - a.score);
+        // Sắp xếp ưu tiên độ phủ từ trong tập hợp và điểm số cao nhất
+        webList.sort((a, b) => {
+          if (b.matchedWords !== a.matchedWords) {
+            return b.matchedWords - a.matchedWords;
+          }
+          return b.score - a.score;
+        });
       }
     }
 
-    // FALLBACK: Nếu tìm qua mục lục ngược không ra, dùng LIKE tìm nguyên tập hợp cụm từ
+    // FALLBACK: Nếu mục lục ngược không khớp, quét LIKE trực tiếp
     if (webList.length === 0) {
       const sqlFallback = `
         SELECT doc_id, tieu_de, url, preview 
@@ -114,7 +120,6 @@ export default async function handler(req, res) {
       }));
     }
 
-    await connection.end();
     const executionTime = ((Date.now() - startTime) / 1000).toFixed(2);
 
     return res.status(200).json({
@@ -124,7 +129,8 @@ export default async function handler(req, res) {
     });
 
   } catch (err) {
-    if (connection) await connection.end();
     return res.status(500).json({ error: 'Lỗi Database: ' + err.message });
+  } finally {
+    if (connection) await connection.end();
   }
 }
