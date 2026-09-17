@@ -38,7 +38,7 @@ export default async function handler(req, res) {
     if (words.length > 0) {
       const placeholders = words.map(() => '?').join(',');
       
-      // Truy vấn mục lục ngược với tập hợp từ
+      // Truy vấn mục lục ngược với tập hợp từ, sắp xếp theo số lượng từ khớp
       const sql1 = `
         SELECT m.doc_id, COUNT(DISTINCT t.word_id) as match_count
         FROM tu_dien t
@@ -60,43 +60,26 @@ export default async function handler(req, res) {
         const sql2 = `SELECT doc_id, tieu_de, url, preview FROM kho_tai_lieu WHERE doc_id IN (${docPlaceholders})`;
         const [docs] = await connection.execute(sql2, docIds);
 
-        webList = docs.map(doc => {
-          const docId = doc.doc_id;
+        // Tạo map để giữ đúng thứ tự sắp xếp từ docMatches
+        const docsMap = new Map();
+        docs.forEach(doc => docsMap.set(doc.doc_id, doc));
+
+        webList = docIds.map(docId => {
+          const doc = docsMap.get(docId);
+          if (!doc) return null;
+
           const title = doc.tieu_de || `Tài liệu #${docId}`;
-          const titleLower = title.toLowerCase();
-          const previewLower = (doc.preview || '').toLowerCase();
-
           const matchedWordsCount = matchScores[docId] || 1;
-          
-          // Công thức tính điểm thông minh: Ưu tiên số lượng từ khớp trong tập hợp (nhân hệ số lớn)
-          let score = matchedWordsCount * 200; 
-
-          // Thưởng điểm nếu chứa trọn vẹn cả cụm từ khóa gốc
-          if (titleLower.includes(cleanQuery)) score += 1000;
-          if (previewLower.includes(cleanQuery)) score += 400;
-
-          // Thưởng điểm cho từng từ xuất hiện rời rạc trong tiêu đề
-          words.forEach(w => {
-            if (titleLower.includes(w)) score += 80;
-          });
 
           return {
             id: docId,
             title: title,
             url: doc.url || '#',
             snippet: doc.preview || 'Không có mô tả xem trước.',
-            score: score,
+            score: matchedWordsCount, // Dùng thẳng số lượng từ khớp làm score gốc
             matchedWords: matchedWordsCount
           };
-        });
-
-        // Sắp xếp ưu tiên độ phủ từ trong tập hợp và điểm số cao nhất
-        webList.sort((a, b) => {
-          if (b.matchedWords !== a.matchedWords) {
-            return b.matchedWords - a.matchedWords;
-          }
-          return b.score - a.score;
-        });
+        }).filter(Boolean);
       }
     }
 
@@ -116,7 +99,7 @@ export default async function handler(req, res) {
         title: doc.tieu_de || `Tài liệu #${doc.doc_id}`,
         url: doc.url || '#',
         snippet: doc.preview || 'Không có mô tả xem trước.',
-        score: 100
+        score: 1
       }));
     }
 
